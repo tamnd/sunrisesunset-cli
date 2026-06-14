@@ -67,15 +67,16 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 
 type sunInput struct {
 	Lat    float64 `kit:"flag" help:"latitude (e.g. 51.5074)"`
-	Lng    float64 `kit:"flag" help:"longitude (e.g. -0.1278)"`
+	Lon    float64 `kit:"flag" help:"longitude (e.g. -0.1278)"`
 	Date   string  `kit:"flag" help:"date in YYYY-MM-DD format (default: today)"`
+	Tz     string  `kit:"flag" help:"IANA timezone name (e.g. America/New_York); default UTC"`
 	Client *Client `kit:"inject"`
 }
 
 // --- handlers ---
 
 func getSun(ctx context.Context, in sunInput, emit func(*SunTimes) error) error {
-	t, err := in.Client.Sun(ctx, in.Lat, in.Lng, in.Date)
+	t, err := in.Client.Sun(ctx, in.Lat, in.Lon, in.Date, in.Tz)
 	if err != nil {
 		return mapErr(err)
 	}
