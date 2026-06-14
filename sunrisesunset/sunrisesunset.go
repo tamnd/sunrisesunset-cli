@@ -1,10 +1,9 @@
 // Package sunrisesunset is the library behind the sunrisesunset command line:
 // the HTTP client, request shaping, and the typed data models for the
-// sunrise-sunset.org API (sunrise/sunset/twilight times for any location).
+// Sunrise-Sunset API (https://api.sunrise-sunset.org).
 //
-// The Client is the spine every command shares. It sets a real User-Agent,
-// paces requests so a busy session stays polite, and retries the transient
-// failures (429 and 5xx) that any public API throws under load.
+// The Client paces and retries requests to stay polite. Build your endpoint
+// calls and JSON decoding on top of it.
 package sunrisesunset
 
 import (
@@ -17,7 +16,7 @@ import (
 	"time"
 )
 
-// Host is the API hostname this package talks to.
+// Host is the API host this client talks to.
 const Host = "api.sunrise-sunset.org"
 
 // Config holds all tuneable parameters for a Client.
@@ -33,31 +32,14 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		BaseURL:   "https://api.sunrise-sunset.org",
-		UserAgent: "sunrisesunset-cli/0.1.0 (github.com/tamnd/sunrisesunset-cli)",
+		UserAgent: "sunrisesunset-cli/0.1 (tamnd87@gmail.com)",
 		Rate:      200 * time.Millisecond,
-		Timeout:   30 * time.Second,
+		Timeout:   10 * time.Second,
 		Retries:   3,
 	}
 }
 
-// SunTimes holds the full set of times returned by the API for one query.
-type SunTimes struct {
-	Sunrise                   string  `json:"sunrise"`
-	Sunset                    string  `json:"sunset"`
-	SolarNoon                 string  `json:"solar_noon"`
-	DayLength                 int     `json:"day_length"`
-	CivilTwilightBegin        string  `json:"civil_twilight_begin"`
-	CivilTwilightEnd          string  `json:"civil_twilight_end"`
-	NauticalTwilightBegin     string  `json:"nautical_twilight_begin"`
-	NauticalTwilightEnd       string  `json:"nautical_twilight_end"`
-	AstronomicalTwilightBegin string  `json:"astronomical_twilight_begin"`
-	AstronomicalTwilightEnd   string  `json:"astronomical_twilight_end"`
-	Lat                       float64 `json:"lat"`
-	Lng                       float64 `json:"lng"`
-	Date                      string  `json:"date"`
-}
-
-// Client talks to api.sunrise-sunset.org over HTTP.
+// Client talks to the Sunrise-Sunset API over HTTP.
 type Client struct {
 	cfg  Config
 	http *http.Client
@@ -70,34 +52,52 @@ func NewClient(cfg Config) *Client {
 	return &Client{cfg: cfg, http: &http.Client{Timeout: cfg.Timeout}}
 }
 
-// apiResponse is the raw JSON envelope.
+// apiResponse is the raw JSON shape the API returns.
 type apiResponse struct {
-	Status  string   `json:"status"`
-	Results SunTimes `json:"results"`
+	Results struct {
+		Sunrise            string `json:"sunrise"`
+		Sunset             string `json:"sunset"`
+		SolarNoon          string `json:"solar_noon"`
+		DayLength          int    `json:"day_length"`
+		CivilTwilightBegin string `json:"civil_twilight_begin"`
+		CivilTwilightEnd   string `json:"civil_twilight_end"`
+	} `json:"results"`
+	Status string `json:"status"`
 }
 
-// Sun fetches sunrise/sunset times for the given latitude, longitude, and date.
-// date must be in "YYYY-MM-DD" format; pass empty string for today.
-func (c *Client) Sun(ctx context.Context, lat, lng float64, date string) (*SunTimes, error) {
+// Lookup fetches sunrise/sunset times for the given coordinates and date.
+// lat and lng are decimal degree strings (e.g. "40.7128", "-74.0060").
+// date is "YYYY-MM-DD" or "today".
+func (c *Client) Lookup(ctx context.Context, lat, lng, date string) (*SunTimes, error) {
 	if date == "" {
-		date = time.Now().UTC().Format("2006-01-02")
+		date = "today"
 	}
-	u := fmt.Sprintf("%s/json?lat=%f&lng=%f&formatted=0&date=%s", c.cfg.BaseURL, lat, lng, date)
+	u := fmt.Sprintf("%s/json?lat=%s&lng=%s&formatted=0&date=%s", c.cfg.BaseURL, lat, lng, date)
 	body, err := c.get(ctx, u)
 	if err != nil {
 		return nil, err
 	}
-	var r apiResponse
-	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, fmt.Errorf("sunrisesunset: decode response: %w", err)
+
+	var resp apiResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	if r.Status != "OK" {
-		return nil, fmt.Errorf("sunrisesunset: API status %q", r.Status)
+	if resp.Status != "OK" {
+		return nil, fmt.Errorf("API error: %s", resp.Status)
 	}
-	r.Results.Lat = lat
-	r.Results.Lng = lng
-	r.Results.Date = date
-	return &r.Results, nil
+
+	r := resp.Results
+	return &SunTimes{
+		Lat:                lat,
+		Lng:                lng,
+		Date:               date,
+		Sunrise:            r.Sunrise,
+		Sunset:             r.Sunset,
+		SolarNoon:          r.SolarNoon,
+		DayLengthHours:     fmt.Sprintf("%.2f", float64(r.DayLength)/3600),
+		CivilTwilightBegin: r.CivilTwilightBegin,
+		CivilTwilightEnd:   r.CivilTwilightEnd,
+	}, nil
 }
 
 func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
@@ -119,7 +119,7 @@ func (c *Client) get(ctx context.Context, u string) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return nil, fmt.Errorf("sunrisesunset: get %s: %w", u, lastErr)
+	return nil, fmt.Errorf("get %s: %w", u, lastErr)
 }
 
 func (c *Client) do(ctx context.Context, u string) (body []byte, retry bool, err error) {
