@@ -33,26 +33,26 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		BaseURL:   "https://api.sunrise-sunset.org",
-		UserAgent: "sunrisesunset-cli/0.1.0 (github.com/tamnd/sunrisesunset-cli)",
-		Rate:      200 * time.Millisecond,
-		Timeout:   30 * time.Second,
+		UserAgent: "sunrisesunset-cli/0.1 (tamnd87@gmail.com)",
+		Rate:      500 * time.Millisecond,
+		Timeout:   15 * time.Second,
 		Retries:   3,
 	}
 }
 
 // SunTimes holds the full set of times returned by the API for one query.
 type SunTimes struct {
-	Location               string `json:"location"                kit:"id"` // "lat,lon" formatted as "%.4f,%.4f"
-	Date                   string `json:"date"`
-	Timezone               string `json:"timezone"`
-	Sunrise                string `json:"sunrise"`
-	Sunset                 string `json:"sunset"`
-	SolarNoon              string `json:"solar_noon"`
-	DayLengthSeconds       int    `json:"day_length_seconds"`
-	CivilTwilightBegin     string `json:"civil_twilight_begin"`
-	CivilTwilightEnd       string `json:"civil_twilight_end"`
-	NauticalTwilightBegin  string `json:"nautical_twilight_begin"`
-	NauticalTwilightEnd    string `json:"nautical_twilight_end"`
+	Location                  string `json:"location"                   kit:"id"` // "lat,lon" formatted as "%.4f,%.4f"
+	Date                      string `json:"date"`
+	Timezone                  string `json:"timezone"`
+	Sunrise                   string `json:"sunrise"`
+	Sunset                    string `json:"sunset"`
+	SolarNoon                 string `json:"solar_noon"`
+	DayLengthSeconds          int    `json:"day_length_seconds"`
+	CivilTwilightBegin        string `json:"civil_twilight_begin"`
+	CivilTwilightEnd          string `json:"civil_twilight_end"`
+	NauticalTwilightBegin     string `json:"nautical_twilight_begin"`
+	NauticalTwilightEnd       string `json:"nautical_twilight_end"`
 	AstronomicalTwilightBegin string `json:"astronomical_twilight_begin"`
 	AstronomicalTwilightEnd   string `json:"astronomical_twilight_end"`
 }
