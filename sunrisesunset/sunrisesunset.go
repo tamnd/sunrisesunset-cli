@@ -1,36 +1,30 @@
 // Package sunrisesunset is the library behind the sunrisesunset command line:
-// the HTTP client, request shaping, and the typed data models for sunrisesunset.
+// the HTTP client, request shaping, and the typed data models for the
+// Sunrise-Sunset API (https://api.sunrise-sunset.org).
 //
-// The Client here is the spine every command shares. It sets a real
-// User-Agent, paces requests so a busy session stays polite, and retries the
-// transient failures (429 and 5xx) that any public site throws under load.
-// Build your endpoint calls and JSON decoding on top of it.
+// The Client paces and retries requests to stay polite. Build your endpoint
+// calls and JSON decoding on top of it.
 package sunrisesunset
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"regexp"
-	"strings"
 	"time"
 )
 
-// DefaultUserAgent identifies the client to sunrisesunset. A real, honest
-// User-Agent is both polite and the thing most likely to keep you unblocked.
-const DefaultUserAgent = "sunrisesunset/dev (+https://github.com/tamnd/sunrisesunset-cli)"
+// DefaultUserAgent identifies the client to the API.
+const DefaultUserAgent = "sunrisesunset-cli/0.1 (tamnd87@gmail.com)"
 
-// Host is the site this client talks to, and the host the URI driver in
-// domain.go claims. The scaffold points it at sunrisesunset.com; change it once you
-// know the real endpoints you want to read.
-const Host = "sunrisesunset.com"
+// Host is the API host this client talks to.
+const Host = "api.sunrise-sunset.org"
 
 // BaseURL is the root every request is built from.
 const BaseURL = "https://" + Host
 
-// Client talks to sunrisesunset over HTTP.
+// Client talks to the Sunrise-Sunset API over HTTP.
 type Client struct {
 	HTTP      *http.Client
 	UserAgent string
@@ -41,20 +35,71 @@ type Client struct {
 	last time.Time
 }
 
-// NewClient returns a Client with sensible defaults: a 30s timeout, a 200ms
-// minimum gap between requests, and five retries on transient errors.
+// NewClient returns a Client with sensible defaults: a 10s timeout, a 200ms
+// minimum gap between requests, and three retries on transient errors.
 func NewClient() *Client {
 	return &Client{
-		HTTP:      &http.Client{Timeout: 30 * time.Second},
+		HTTP:      &http.Client{Timeout: 10 * time.Second},
 		UserAgent: DefaultUserAgent,
 		Rate:      200 * time.Millisecond,
-		Retries:   5,
+		Retries:   3,
 	}
 }
 
+// apiResponse is the raw JSON shape the API returns.
+type apiResponse struct {
+	Results struct {
+		Sunrise                string `json:"sunrise"`
+		Sunset                 string `json:"sunset"`
+		SolarNoon              string `json:"solar_noon"`
+		DayLength              int    `json:"day_length"`
+		CivilTwilightBegin     string `json:"civil_twilight_begin"`
+		CivilTwilightEnd       string `json:"civil_twilight_end"`
+		NauticalTwilightBegin  string `json:"nautical_twilight_begin"`
+		NauticalTwilightEnd    string `json:"nautical_twilight_end"`
+		AstroTwilightBegin     string `json:"astronomical_twilight_begin"`
+		AstroTwilightEnd       string `json:"astronomical_twilight_end"`
+	} `json:"results"`
+	Status string `json:"status"`
+}
+
+// Lookup fetches sunrise/sunset times for the given coordinates and date.
+// lat and lng are decimal degree strings (e.g. "40.7128", "-74.0060").
+// date is "YYYY-MM-DD" or "today".
+func (c *Client) Lookup(ctx context.Context, lat, lng, date string) (*SunTimes, error) {
+	if date == "" {
+		date = "today"
+	}
+	rawURL := fmt.Sprintf("%s/json?lat=%s&lng=%s&formatted=0&date=%s", BaseURL, lat, lng, date)
+	body, err := c.Get(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp apiResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	if resp.Status != "OK" {
+		return nil, fmt.Errorf("API error: %s", resp.Status)
+	}
+
+	r := resp.Results
+	return &SunTimes{
+		Lat:                lat,
+		Lng:                lng,
+		Date:               date,
+		Sunrise:            r.Sunrise,
+		Sunset:             r.Sunset,
+		SolarNoon:          r.SolarNoon,
+		DayLengthHours:     fmt.Sprintf("%.2f", float64(r.DayLength)/3600),
+		CivilTwilightBegin: r.CivilTwilightBegin,
+		CivilTwilightEnd:   r.CivilTwilightEnd,
+	}, nil
+}
+
 // Get fetches url and returns the response body. It paces and retries according
-// to the client's settings. The caller owns nothing extra; the body is read
-// fully and closed here.
+// to the client's settings.
 func (c *Client) Get(ctx context.Context, rawURL string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.Retries; attempt++ {
@@ -122,112 +167,4 @@ func backoff(attempt int) time.Duration {
 		d = 5 * time.Second
 	}
 	return d
-}
-
-// Page is the scaffold's one example record: a single page, addressed by the
-// path that names it on sunrisesunset.com. It is a stand-in for the typed records you
-// will model from the real sunrisesunset endpoints.
-//
-// The kit struct tags make it addressable as a resource URI (see domain.go): ID
-// is the URI id, and Body is the long text `sunrisesunset cat` and the Markdown
-// export print. The table tags shape the terminal grid (`-o table`) without
-// touching the JSON: URL is flagged the canonical column the `url` format prints,
-// and Body is hidden from the grid with `table:"-"` because a long preview wrecks
-// a row, though it still rides in `-o json` and `sunrisesunset cat`. Swap `-` for
-// `table:"body,truncate"` if you would rather clip it to the terminal width.
-type Page struct {
-	ID    string `json:"id" kit:"id" table:"id"`
-	URL   string `json:"url" table:"url,url"`
-	Title string `json:"title,omitempty" table:"title"`
-	Body  string `json:"body,omitempty" kit:"body" table:"-"`
-}
-
-// GetPage fetches one page by its path (for example "wiki/Go") and returns it as
-// a record. The scaffold keeps a plain-text preview of the response as the body;
-// replace the parsing with the real fields once you know the endpoint's shape.
-func (c *Client) GetPage(ctx context.Context, path string) (*Page, error) {
-	path = strings.Trim(path, "/")
-	url := BaseURL + "/" + path
-	body, err := c.Get(ctx, url)
-	if err != nil {
-		return nil, err
-	}
-	return &Page{ID: path, URL: url, Title: path, Body: pageText(body)}, nil
-}
-
-// PageLinks fetches a page and returns the same-host pages it links to, as page
-// stubs. It shows the member-listing pattern the URI driver relies on: every
-// stub carries enough (an id and a URL) to be addressed and followed on its own.
-func (c *Client) PageLinks(ctx context.Context, path string, limit int) ([]*Page, error) {
-	path = strings.Trim(path, "/")
-	body, err := c.Get(ctx, BaseURL+"/"+path)
-	if err != nil {
-		return nil, err
-	}
-	var out []*Page
-	seen := map[string]bool{}
-	for _, p := range linkPaths(body) {
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, &Page{ID: p, URL: BaseURL + "/" + p})
-		if limit > 0 && len(out) >= limit {
-			break
-		}
-	}
-	return out, nil
-}
-
-// Search fetches the site's search results for query and returns the matching
-// pages as stubs, the same shape PageLinks emits, so every hit is an addressable
-// sunrisesunset.com page URI a host can follow. Like the rest of the scaffold it is a
-// stand-in: it reads the links out of a results page rather than a real search
-// API. Point it at the real endpoint and parse the real result shape once you
-// know it.
-func (c *Client) Search(ctx context.Context, query string, limit int) ([]*Page, error) {
-	body, err := c.Get(ctx, BaseURL+"/search?q="+url.QueryEscape(query))
-	if err != nil {
-		return nil, err
-	}
-	var out []*Page
-	seen := map[string]bool{}
-	for _, p := range linkPaths(body) {
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
-		out = append(out, &Page{ID: p, URL: BaseURL + "/" + p})
-		if limit > 0 && len(out) >= limit {
-			break
-		}
-	}
-	return out, nil
-}
-
-var (
-	hrefRE = regexp.MustCompile(`href="(/[^":#?]+)"`)
-	tagRE  = regexp.MustCompile(`<[^>]+>`)
-)
-
-// linkPaths pulls the relative link targets out of an HTML response, so a list
-// op can turn each into an addressable page stub.
-func linkPaths(body []byte) []string {
-	var out []string
-	for _, m := range hrefRE.FindAllSubmatch(body, -1) {
-		if p := strings.Trim(string(m[1]), "/"); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// pageText reduces an HTML response to a short plain-text preview, a stand-in
-// for the typed extract a real endpoint would hand you.
-func pageText(body []byte) string {
-	s := strings.Join(strings.Fields(tagRE.ReplaceAllString(string(body), " ")), " ")
-	if len(s) > 500 {
-		s = s[:500]
-	}
-	return s
 }

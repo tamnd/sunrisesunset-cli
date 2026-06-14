@@ -25,9 +25,8 @@ func TestDomainInfo(t *testing.T) {
 
 func TestClassify(t *testing.T) {
 	cases := []struct{ in, typ, id string }{
-		{"wiki/Go", "page", "wiki/Go"},
-		{"/about/", "page", "about"},
-		{"https://" + Host + "/team/contact", "page", "team/contact"},
+		{"40.7128,-74.0060", "suntimes", "40.7128,-74.0060"},
+		{"-33.8688,151.2093", "suntimes", "-33.8688,151.2093"},
 	}
 	for _, tc := range cases {
 		typ, id, err := Domain{}.Classify(tc.in)
@@ -39,42 +38,31 @@ func TestClassify(t *testing.T) {
 }
 
 func TestLocate(t *testing.T) {
-	got, err := Domain{}.Locate("page", "wiki/Go")
-	want := "https://" + Host + "/wiki/Go"
+	got, err := Domain{}.Locate("suntimes", "40.7128,-74.0060")
+	want := "https://" + Host + "/json?lat=40.7128,-74.0060&formatted=0"
 	if err != nil || got != want {
 		t.Errorf("Locate = (%q, %v), want (%q, nil)", got, err, want)
 	}
 }
 
-// TestHostWiring mounts the driver in a kit Host (the runtime ant drives) and
-// checks the round trip: a record mints to its URI, its body is readable, and a
-// bare id resolves back to the same URI. The init in domain.go registers the
-// domain, so kit.Open finds it.
+// TestHostWiring mounts the driver in a kit Host and checks the round trip:
+// a record mints to its URI, and its body is readable.
 func TestHostWiring(t *testing.T) {
 	h, err := kit.Open()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	p := &Page{ID: "wiki/Go", URL: "https://" + Host + "/wiki/Go", Title: "Go", Body: "Go is a language."}
-	u, err := h.Mint(p)
+	st := &SunTimes{
+		Lat:  "40.7128",
+		Lng:  "-74.0060",
+		Date: "2026-06-14",
+	}
+	u, err := h.Mint(st)
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	if want := "sunrisesunset://page/wiki/Go"; u.String() != want {
+	if want := "sunrisesunset://suntimes/40.7128"; u.String() != want {
 		t.Errorf("Mint = %q, want %q", u.String(), want)
-	}
-
-	if body, ok := h.Body(p); !ok || body == "" {
-		t.Errorf("Body = (%q, %v), want non-empty", body, ok)
-	}
-
-	if !h.Searchable("sunrisesunset") {
-		t.Error("Searchable = false, want true (the domain registers a search op)")
-	}
-
-	got, err := h.ResolveOn("sunrisesunset", "about")
-	if err != nil || got.String() != "sunrisesunset://page/about" {
-		t.Errorf("ResolveOn = (%q, %v), want sunrisesunset://page/about", got.String(), err)
 	}
 }

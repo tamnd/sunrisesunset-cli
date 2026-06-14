@@ -2,8 +2,7 @@ package sunrisesunset
 
 import (
 	"context"
-	"net/url"
-	"strings"
+	"fmt"
 
 	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/any-cli/kit/errs"
@@ -19,17 +18,14 @@ import (
 // sunrisesunset:// URIs by routing to the operations Register installs. The same
 // Domain also builds the standalone sunrisesunset binary (see cli.NewApp), so the
 // binary and a host share one source of truth.
-//
-// This is the scaffold's starting point: one resource type, "page", served by a
-// resolver op and a list op. Add your real types here as you model the site.
 func init() { kit.Register(Domain{}) }
 
 // Domain is the sunrisesunset driver. It carries no state; the per-run client is
 // built by the factory Register hands kit.
 type Domain struct{}
 
-// Info describes the scheme, the hostnames a pasted link is matched against, and
-// the identity reused for the binary's help and version.
+// Info describes the scheme, the hostnames a pasted link is matched against,
+// and the identity reused for the binary's help and version.
 func (Domain) Info() kit.DomainInfo {
 	return kit.DomainInfo{
 		Scheme: "sunrisesunset",
@@ -39,45 +35,40 @@ func (Domain) Info() kit.DomainInfo {
 			Short:  "A command line for the Sunrise-Sunset API.",
 			Long: `A command line for the Sunrise-Sunset API.
 
-sunrisesunset reads public sunrisesunset data over plain HTTPS, shapes it into
-clean records, and prints output that pipes into the rest of your tools. No API
-key, nothing to run alongside it.`,
+sunrisesunset fetches sunrise and sunset times for any coordinates via
+https://api.sunrise-sunset.org. No API key required.`,
 			Site: Host,
 			Repo: "https://github.com/tamnd/sunrisesunset-cli",
 		},
 	}
 }
 
-// Register installs the client factory and every operation onto app. A resolver
-// op (Single) names its own record type and answers `ant get`; a List op
-// enumerates a parent resource's members and answers `ant ls`.
+// SunTimes is one record: the solar event times for a given location and date.
+type SunTimes struct {
+	Lat                string `kit:"id" json:"lat" table:"lat"`
+	Lng                string `json:"lng" table:"lng"`
+	Date               string `json:"date" table:"date"`
+	Sunrise            string `json:"sunrise" table:"sunrise"`
+	Sunset             string `json:"sunset" table:"sunset"`
+	SolarNoon          string `json:"solar_noon" table:"solar_noon"`
+	DayLengthHours     string `json:"day_length_hours" table:"day_length_hours"`
+	CivilTwilightBegin string `json:"civil_twilight_begin" table:"civil_twilight_begin"`
+	CivilTwilightEnd   string `json:"civil_twilight_end" table:"civil_twilight_end"`
+}
+
+// Register installs the client factory and every operation onto app.
 func (Domain) Register(app *kit.App) {
 	app.SetClient(newClient)
 
-	// Resolver op: one record per id, the home of `sunrisesunset page` and
-	// `ant get sunrisesunset://page/<id>`.
-	kit.Handle(app, kit.OpMeta{Name: "page", Group: "read", Single: true,
-		Summary: "Fetch a page by path or URL", URIType: "page", Resolver: true,
-		Args: []kit.Arg{{Name: "ref", Help: "page path or URL"}}}, getPage)
-
-	// List op: members of a page, the home of `sunrisesunset links` and `ant ls`.
-	// It emits page stubs, so every listed member is itself an addressable
-	// sunrisesunset://page/ URI a host can follow.
-	kit.Handle(app, kit.OpMeta{Name: "links", Group: "read", List: true,
-		Summary: "List the pages a page links to", URIType: "page",
-		Args: []kit.Arg{{Name: "ref", Help: "page path or URL"}}}, listLinks)
-
-	// Search op: a free-text query, the home of `sunrisesunset search` and the
-	// search box a host (ant) shows for this domain. A top-level op named "search"
-	// is exactly what kit.Host.Searchable looks for. Like links it emits page
-	// stubs, so a host can follow any hit to its own sunrisesunset://page/ URI.
-	kit.Handle(app, kit.OpMeta{Name: "search", Group: "read",
-		Summary: "Search sunrisesunset",
-		Args:    []kit.Arg{{Name: "query", Help: "search query"}}}, searchPages)
+	kit.Handle(app, kit.OpMeta{
+		Name:    "lookup",
+		Group:   "read",
+		Single:  true,
+		Summary: "Get sunrise and sunset times for a location",
+	}, lookup)
 }
 
-// newClient builds the client from the host-resolved config, so a host and the
-// standalone binary pace and identify themselves the same way.
+// newClient builds the client from the host-resolved config.
 func newClient(_ context.Context, cfg kit.Config) (any, error) {
 	c := NewClient()
 	if cfg.UserAgent != "" {
@@ -95,106 +86,55 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 	return c, nil
 }
 
-// --- inputs ---
-//
-// Each handler takes a typed input struct. kit fills the fields from the tags:
-// kit:"arg" is a positional argument, kit:"flag,inherit" binds the framework's
-// shared flag of the same name, and kit:"inject" receives the client newClient
-// builds.
-
-type pageRef struct {
-	Ref    string  `kit:"arg" help:"page path or URL"`
+// lookupInput holds the arguments and flags for the lookup command.
+// Both lat and lng are flags rather than positional args because cobra treats
+// tokens starting with "-" as flags. A negative coordinate like -74.0060 or
+// -33.8688 would be misread as a flag if passed positionally. Using --lat and
+// --lng avoids that ambiguity.
+type lookupInput struct {
+	Lat    string  `kit:"flag" help:"latitude in decimal degrees (e.g. --lat 40.7128 or --lat -33.8688)"`
+	Lng    string  `kit:"flag" help:"longitude in decimal degrees (e.g. --lng -74.0060 or --lng 151.2093)"`
+	Date   string  `kit:"flag" help:"date in YYYY-MM-DD format (default: today)"`
 	Client *Client `kit:"inject"`
 }
 
-type listRef struct {
-	Ref    string  `kit:"arg" help:"page path or URL"`
-	Limit  int     `kit:"flag,inherit" help:"max results"`
-	Client *Client `kit:"inject"`
-}
-
-type searchRef struct {
-	Query  string  `kit:"arg" help:"search query"`
-	Limit  int     `kit:"flag,inherit" help:"max results"`
-	Client *Client `kit:"inject"`
-}
-
-// --- handlers ---
-
-func getPage(ctx context.Context, in pageRef, emit func(*Page) error) error {
-	p, err := in.Client.GetPage(ctx, pagePath(in.Ref))
+func lookup(ctx context.Context, in lookupInput, emit func(*SunTimes) error) error {
+	if in.Lat == "" {
+		return errs.Usage("--lat is required")
+	}
+	if in.Lng == "" {
+		return errs.Usage("--lng is required")
+	}
+	date := in.Date
+	if date == "" {
+		date = "today"
+	}
+	result, err := in.Client.Lookup(ctx, in.Lat, in.Lng, date)
 	if err != nil {
 		return mapErr(err)
 	}
-	return emit(p)
+	return emit(result)
 }
 
-func listLinks(ctx context.Context, in listRef, emit func(*Page) error) error {
-	pages, err := in.Client.PageLinks(ctx, pagePath(in.Ref), in.Limit)
-	if err != nil {
-		return mapErr(err)
-	}
-	for _, p := range pages {
-		if err := emit(p); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func searchPages(ctx context.Context, in searchRef, emit func(*Page) error) error {
-	pages, err := in.Client.Search(ctx, in.Query, in.Limit)
-	if err != nil {
-		return mapErr(err)
-	}
-	for _, p := range pages {
-		if err := emit(p); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// --- Resolver: the URI-native string functions, pure and network-free ---
-
-// Classify turns any accepted input — a bare path or a full sunrisesunset.com URL —
-// into the canonical (type, id), so `ant resolve` and `ant url` touch no network.
+// Classify turns any accepted input into the canonical (type, id).
+// For sunrisesunset a URI looks like sunrisesunset://suntimes/<lat>,<lng>.
 func (Domain) Classify(input string) (uriType, id string, err error) {
-	id = pagePath(input)
-	if id == "" {
+	if input == "" {
 		return "", "", errs.Usage("unrecognized sunrisesunset reference: %q", input)
 	}
-	return "page", id, nil
+	return "suntimes", input, nil
 }
 
 // Locate is the inverse: the live https URL for a (type, id).
 func (Domain) Locate(uriType, id string) (string, error) {
-	if uriType != "page" {
+	if uriType != "suntimes" {
 		return "", errs.Usage("sunrisesunset has no resource type %q", uriType)
 	}
-	return BaseURL + "/" + strings.Trim(id, "/"), nil
-}
-
-// --- helpers ---
-
-// pagePath turns any accepted input into the canonical page id: the path of a
-// full URL on this host, or a bare path with its slashes trimmed.
-func pagePath(input string) string {
-	input = strings.TrimSpace(input)
-	if u, err := url.Parse(input); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
-		return strings.Trim(u.Path, "/")
-	}
-	return strings.Trim(input, "/")
+	return fmt.Sprintf("%s/json?lat=%s&formatted=0", BaseURL, id), nil
 }
 
 // mapErr converts a library error into the kit error kind that carries the right
-// exit code, so a host renders the same outcomes the standalone binary does. As
-// you add sentinel errors to the library, map them here, for example:
-//
-//	case errors.Is(err, ErrNotFound):
-//		return errs.NotFound("%s", err.Error())
-//	case errors.Is(err, ErrRateLimited):
-//		return errs.RateLimited("%s", err.Error())
+// exit code.
 func mapErr(err error) error {
 	return err
 }
