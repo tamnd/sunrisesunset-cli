@@ -32,28 +32,15 @@ func (Domain) Info() kit.DomainInfo {
 		Identity: kit.Identity{
 			Binary: "sunrisesunset",
 			Short:  "Get sunrise and sunset times for any location.",
-			Long: `sunrisesunset fetches sunrise, sunset, solar noon, day length, and civil
-twilight times for any latitude/longitude pair.
+			Long: `sunrisesunset fetches sunrise, sunset, solar noon, day length, and civil,
+nautical, and astronomical twilight times for any latitude/longitude pair.
 
 It calls the free sunrise-sunset.org API (no key required) and prints a JSON
-record for the requested location and date. Times are in RFC 3339 UTC.`,
+record for the requested location and date. Times are RFC 3339 strings.`,
 			Site: Host,
 			Repo: "https://github.com/tamnd/sunrisesunset-cli",
 		},
 	}
-}
-
-// SunTimes is one record: the solar event times for a given location and date.
-type SunTimes struct {
-	Lat                string `kit:"id" json:"lat" table:"lat"`
-	Lng                string `json:"lng" table:"lng"`
-	Date               string `json:"date" table:"date"`
-	Sunrise            string `json:"sunrise" table:"sunrise"`
-	Sunset             string `json:"sunset" table:"sunset"`
-	SolarNoon          string `json:"solar_noon" table:"solar_noon"`
-	DayLengthHours     string `json:"day_length_hours" table:"day_length_hours"`
-	CivilTwilightBegin string `json:"civil_twilight_begin" table:"civil_twilight_begin"`
-	CivilTwilightEnd   string `json:"civil_twilight_end" table:"civil_twilight_end"`
 }
 
 // Register installs the client factory and every operation onto app.
@@ -61,12 +48,12 @@ func (Domain) Register(app *kit.App) {
 	app.SetClient(newClient)
 
 	kit.Handle(app, kit.OpMeta{
-		Name:    "lookup",
+		Name:    "sun",
 		Group:   "read",
 		Single:  true,
 		Summary: "Get sunrise and sunset times for a location",
 		URIType: "location",
-	}, lookup)
+	}, getSun)
 }
 
 // newClient builds the client from the host-resolved config.
@@ -87,34 +74,28 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 	return NewClient(c), nil
 }
 
-// lookupInput holds the flags for the lookup command.
-// Both lat and lng are flags rather than positional args because cobra treats
-// tokens starting with "-" as flags. A negative coordinate like -74.0060 or
-// -33.8688 would be misread as a flag if passed positionally. Using --lat and
-// --lng avoids that ambiguity.
-type lookupInput struct {
-	Lat    string  `kit:"flag" help:"latitude in decimal degrees (e.g. --lat 40.7128 or --lat -33.8688)"`
-	Lng    string  `kit:"flag" help:"longitude in decimal degrees (e.g. --lng -74.0060 or --lng 151.2093)"`
+// --- inputs ---
+
+// sunInput holds the flags for the sun command. Both --lat and --lon are named
+// float64 flags (not positional args) because cobra treats tokens starting with
+// "-" as flags. A negative longitude like -74.0060 would be misread as a flag
+// if passed positionally. Named flags avoid that ambiguity.
+type sunInput struct {
+	Lat    float64 `kit:"flag" help:"latitude in decimal degrees (e.g. --lat 40.7128 or --lat -33.8688)"`
+	Lon    float64 `kit:"flag" help:"longitude in decimal degrees (e.g. --lon -74.0060 or --lon 151.2093)"`
 	Date   string  `kit:"flag" help:"date in YYYY-MM-DD format (default: today)"`
+	Tz     string  `kit:"flag" help:"IANA timezone name (e.g. America/New_York); default UTC"`
 	Client *Client `kit:"inject"`
 }
 
-func lookup(ctx context.Context, in lookupInput, emit func(*SunTimes) error) error {
-	if in.Lat == "" {
-		return errs.Usage("--lat is required")
-	}
-	if in.Lng == "" {
-		return errs.Usage("--lng is required")
-	}
-	date := in.Date
-	if date == "" {
-		date = "today"
-	}
-	result, err := in.Client.Lookup(ctx, in.Lat, in.Lng, date)
+// --- handlers ---
+
+func getSun(ctx context.Context, in sunInput, emit func(*SunTimes) error) error {
+	t, err := in.Client.Sun(ctx, in.Lat, in.Lon, in.Date, in.Tz)
 	if err != nil {
 		return mapErr(err)
 	}
-	return emit(result)
+	return emit(t)
 }
 
 // Classify turns a coordinate pair into the canonical (type, id).

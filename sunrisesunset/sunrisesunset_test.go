@@ -22,6 +22,7 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *sunrisesunset.Client
 
 const sampleResponse = `{
 	"status":"OK",
+	"tzid":"UTC",
 	"results":{
 		"sunrise":"2026-06-14T03:44:32+00:00",
 		"sunset":"2026-06-14T19:40:02+00:00",
@@ -36,7 +37,7 @@ const sampleResponse = `{
 	}
 }`
 
-func TestLookup_userAgent(t *testing.T) {
+func TestSun_userAgent(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		ua := r.Header.Get("User-Agent")
 		if ua == "" {
@@ -47,17 +48,17 @@ func TestLookup_userAgent(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(sampleResponse))
 	})
-	_, err := c.Lookup(context.Background(), "51.5074", "-0.1278", "2026-06-14")
+	_, err := c.Sun(context.Background(), 51.5074, -0.1278, "2026-06-14", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestLookup_parseSunriseAndSunset(t *testing.T) {
+func TestSun_parseSunriseAndSunset(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(sampleResponse))
 	})
-	st, err := c.Lookup(context.Background(), "51.5074", "-0.1278", "2026-06-14")
+	st, err := c.Sun(context.Background(), 51.5074, -0.1278, "2026-06-14", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,19 +68,25 @@ func TestLookup_parseSunriseAndSunset(t *testing.T) {
 	if st.Sunset != "2026-06-14T19:40:02+00:00" {
 		t.Errorf("Sunset = %q, want 2026-06-14T19:40:02+00:00", st.Sunset)
 	}
-	// 57630s / 3600 = 16.008... rounds to 16.01
-	if st.DayLengthHours != "16.01" {
-		t.Errorf("DayLengthHours = %q, want 16.01", st.DayLengthHours)
-	}
-	if st.Lat != "51.5074" {
-		t.Errorf("Lat = %q, want 51.5074", st.Lat)
-	}
-	if st.Lng != "-0.1278" {
-		t.Errorf("Lng = %q, want -0.1278", st.Lng)
+	if st.DayLengthSeconds != 57630 {
+		t.Errorf("DayLengthSeconds = %d, want 57630", st.DayLengthSeconds)
 	}
 }
 
-func TestLookup_dateParamInURL(t *testing.T) {
+func TestSun_location(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(sampleResponse))
+	})
+	st, err := c.Sun(context.Background(), 51.5074, -0.1278, "2026-06-14", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Location != "51.5074,-0.1278" {
+		t.Errorf("Location = %q, want 51.5074,-0.1278", st.Location)
+	}
+}
+
+func TestSun_dateParamInURL(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		date := r.URL.Query().Get("date")
 		if date != "2026-06-14" {
@@ -91,13 +98,30 @@ func TestLookup_dateParamInURL(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(sampleResponse))
 	})
-	_, err := c.Lookup(context.Background(), "48.8566", "2.3522", "2026-06-14")
+	_, err := c.Sun(context.Background(), 48.8566, 2.3522, "2026-06-14", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestLookup_retry503(t *testing.T) {
+func TestSun_tzidParamInURL(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		tzid := r.URL.Query().Get("tzid")
+		if tzid != "America/New_York" {
+			t.Errorf("tzid query param = %q, want America/New_York", tzid)
+		}
+		_, _ = w.Write([]byte(`{"status":"OK","tzid":"America/New_York","results":{"sunrise":"2026-06-14T05:44:32-04:00","sunset":"2026-06-14T20:40:02-04:00","solar_noon":"2026-06-14T13:12:17-04:00","day_length":54000,"civil_twilight_begin":"2026-06-14T05:13:59-04:00","civil_twilight_end":"2026-06-14T21:10:35-04:00","nautical_twilight_begin":"2026-06-14T04:32:27-04:00","nautical_twilight_end":"2026-06-14T21:51:47-04:00","astronomical_twilight_begin":"2026-06-14T03:40:52-04:00","astronomical_twilight_end":"2026-06-14T22:43:42-04:00"}}`))
+	})
+	st, err := c.Sun(context.Background(), 40.7128, -74.0060, "2026-06-14", "America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Timezone != "America/New_York" {
+		t.Errorf("Timezone = %q, want America/New_York", st.Timezone)
+	}
+}
+
+func TestSun_retry503(t *testing.T) {
 	var hits int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
@@ -115,23 +139,23 @@ func TestLookup_retry503(t *testing.T) {
 	cfg.Retries = 5
 	c := sunrisesunset.NewClient(cfg)
 
-	st, err := c.Lookup(context.Background(), "0", "0", "2026-06-14")
+	st, err := c.Sun(context.Background(), 0, 0, "2026-06-14", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.DayLengthHours != "16.01" {
-		t.Errorf("DayLengthHours = %q, want 16.01", st.DayLengthHours)
+	if st.DayLengthSeconds != 57630 {
+		t.Errorf("DayLengthSeconds = %d, want 57630", st.DayLengthSeconds)
 	}
 	if hits != 3 {
 		t.Errorf("server hits = %d, want 3", hits)
 	}
 }
 
-func TestLookup_errorStatus(t *testing.T) {
+func TestSun_errorStatus(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"INVALID_REQUEST","results":{}}`))
 	})
-	_, err := c.Lookup(context.Background(), "0", "0", "bad-date")
+	_, err := c.Sun(context.Background(), 0, 0, "bad-date", "")
 	if err == nil {
 		t.Fatal("expected error on INVALID_REQUEST status, got nil")
 	}
@@ -140,7 +164,7 @@ func TestLookup_errorStatus(t *testing.T) {
 	}
 }
 
-func TestLookup_latLngInURL(t *testing.T) {
+func TestSun_latLngInURL(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		lng := r.URL.Query().Get("lng")
 		if lng == "" {
@@ -152,24 +176,8 @@ func TestLookup_latLngInURL(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(sampleResponse))
 	})
-	_, err := c.Lookup(context.Background(), "35.6762", "139.6503", "2026-06-14")
+	_, err := c.Sun(context.Background(), 35.6762, 139.6503, "2026-06-14", "")
 	if err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestLookup_defaultsToToday(t *testing.T) {
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("date") != "today" {
-			t.Errorf("date = %q, want today", r.URL.Query().Get("date"))
-		}
-		_, _ = w.Write([]byte(sampleResponse))
-	})
-	st, err := c.Lookup(context.Background(), "-33.8688", "151.2093", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if st.Date != "today" {
-		t.Errorf("Date = %q, want today", st.Date)
 	}
 }
