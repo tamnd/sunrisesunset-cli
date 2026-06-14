@@ -36,7 +36,7 @@ const sampleResponse = `{
 	}
 }`
 
-func TestSun_userAgent(t *testing.T) {
+func TestLookup_userAgent(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		ua := r.Header.Get("User-Agent")
 		if ua == "" {
@@ -47,17 +47,17 @@ func TestSun_userAgent(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(sampleResponse))
 	})
-	_, err := c.Sun(context.Background(), 51.5074, -0.1278, "2026-06-14")
+	_, err := c.Lookup(context.Background(), "51.5074", "-0.1278", "2026-06-14")
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestSun_parseSunriseAndSunset(t *testing.T) {
+func TestLookup_parseSunriseAndSunset(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(sampleResponse))
 	})
-	st, err := c.Sun(context.Background(), 51.5074, -0.1278, "2026-06-14")
+	st, err := c.Lookup(context.Background(), "51.5074", "-0.1278", "2026-06-14")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,12 +67,19 @@ func TestSun_parseSunriseAndSunset(t *testing.T) {
 	if st.Sunset != "2026-06-14T19:40:02+00:00" {
 		t.Errorf("Sunset = %q, want 2026-06-14T19:40:02+00:00", st.Sunset)
 	}
-	if st.DayLength != 57630 {
-		t.Errorf("DayLength = %d, want 57630", st.DayLength)
+	// 57630s / 3600 = 16.008... rounds to 16.01
+	if st.DayLengthHours != "16.01" {
+		t.Errorf("DayLengthHours = %q, want 16.01", st.DayLengthHours)
+	}
+	if st.Lat != "51.5074" {
+		t.Errorf("Lat = %q, want 51.5074", st.Lat)
+	}
+	if st.Lng != "-0.1278" {
+		t.Errorf("Lng = %q, want -0.1278", st.Lng)
 	}
 }
 
-func TestSun_dateParamInURL(t *testing.T) {
+func TestLookup_dateParamInURL(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		date := r.URL.Query().Get("date")
 		if date != "2026-06-14" {
@@ -84,13 +91,13 @@ func TestSun_dateParamInURL(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(sampleResponse))
 	})
-	_, err := c.Sun(context.Background(), 48.8566, 2.3522, "2026-06-14")
+	_, err := c.Lookup(context.Background(), "48.8566", "2.3522", "2026-06-14")
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestSun_retry503(t *testing.T) {
+func TestLookup_retry503(t *testing.T) {
 	var hits int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
@@ -108,23 +115,23 @@ func TestSun_retry503(t *testing.T) {
 	cfg.Retries = 5
 	c := sunrisesunset.NewClient(cfg)
 
-	st, err := c.Sun(context.Background(), 0, 0, "2026-06-14")
+	st, err := c.Lookup(context.Background(), "0", "0", "2026-06-14")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.DayLength != 57630 {
-		t.Errorf("DayLength = %d, want 57630", st.DayLength)
+	if st.DayLengthHours != "16.01" {
+		t.Errorf("DayLengthHours = %q, want 16.01", st.DayLengthHours)
 	}
 	if hits != 3 {
 		t.Errorf("server hits = %d, want 3", hits)
 	}
 }
 
-func TestSun_errorStatus(t *testing.T) {
+func TestLookup_errorStatus(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"INVALID_REQUEST","results":{}}`))
 	})
-	_, err := c.Sun(context.Background(), 0, 0, "bad-date")
+	_, err := c.Lookup(context.Background(), "0", "0", "bad-date")
 	if err == nil {
 		t.Fatal("expected error on INVALID_REQUEST status, got nil")
 	}
@@ -133,7 +140,7 @@ func TestSun_errorStatus(t *testing.T) {
 	}
 }
 
-func TestSun_latLngInURL(t *testing.T) {
+func TestLookup_latLngInURL(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		lng := r.URL.Query().Get("lng")
 		if lng == "" {
@@ -145,8 +152,24 @@ func TestSun_latLngInURL(t *testing.T) {
 		}
 		_, _ = w.Write([]byte(sampleResponse))
 	})
-	_, err := c.Sun(context.Background(), 35.6762, 139.6503, "2026-06-14")
+	_, err := c.Lookup(context.Background(), "35.6762", "139.6503", "2026-06-14")
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLookup_defaultsToToday(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("date") != "today" {
+			t.Errorf("date = %q, want today", r.URL.Query().Get("date"))
+		}
+		_, _ = w.Write([]byte(sampleResponse))
+	})
+	st, err := c.Lookup(context.Background(), "-33.8688", "151.2093", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Date != "today" {
+		t.Errorf("Date = %q, want today", st.Date)
 	}
 }
